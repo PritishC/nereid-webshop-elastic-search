@@ -87,28 +87,20 @@ class Product:
         """
         Attribute = Pool().get('product.attribute')
 
-        return [
-            x.name for x in Attribute.search([('filterable', '=', True)])
-        ]
+        return Attribute.search([('filterable', '=', True)])
 
     @classmethod
-    def add_faceting_to_query(cls, query):
+    def _build_es_facets(cls, search_obj):
         """
-        This method wraps the query by a `~pyes.query.Search` object, and then
-        adds appropriate terms to the `facet` attribute of this object. By
-        default, term facets are generated over filterable attributes.
+        This method adds appropriate terms to the `facet` attribute of the
+        `~pyes.query.Search` object. By default, term facets are generated over
+        filterable attributes.
         """
-        filterable_attributes = cls.get_filterable_attributes()
-
-        search_query = query.search()
-
-        for attribute in filterable_attributes:
-            search_query.facet.add_term_facet(attribute)
-
-        return search_query
+        # Just return the object for now.
+        return search_obj
 
     @classmethod
-    def get_elastic_search_query(cls, search_phrase):
+    def _build_es_query(cls, search_phrase):
         """
         Return an instance of `~pyes.query.Query` for the given phrase.
         If downstream modules wish to alter the behavior of search, for example
@@ -157,14 +149,13 @@ class Product:
         )
 
     @classmethod
-    def search_on_elastic_search(cls, search_phrase, limit=100):
+    def _quick_search_es(cls, search_phrase, limit=100, autocomplete=False):
         """
-        Searches on elasticsearch server for given search phrase.
-
+        Classmethod that the quick_search() web handler delegates to.
         TODO:
 
             * Add support for sorting
-            * Add support for aggregates
+            * Migrate to aggregates
 
         This method passes a query, alongwith term facets, to the search method
         for processing. For example, if one has a `~pyes.query.BoolQuery`
@@ -192,11 +183,16 @@ class Product:
         config = Pool().get('elasticsearch.configuration')(1)
 
         conn = config.get_es_connection(timeout=5)
-        query = cls.get_elastic_search_query(search_phrase)
-        faceted_query = cls.add_faceting_to_query(query)
+        query = cls._build_es_query(search_phrase)
+        search_obj = query.search()
+
+        # Do faceting if it wasn't the autocomplete handler that sent the
+        # request.
+        if not autocomplete:
+            search_obj = cls._build_es_facets(search_obj)
 
         return conn.search(
-            faceted_query,
+            search_obj,
             doc_types=[config.make_type_name('product.product')],
             size=limit
         )
@@ -213,7 +209,7 @@ class Product:
 
         logger = Pool().get('elasticsearch.configuration').get_logger()
 
-        result_set = cls.search_on_elastic_search(phrase)
+        result_set = cls._quick_search_es(phrase)
 
         results = [
             r.id for r in
@@ -244,7 +240,7 @@ class Product:
         Handler for auto-completion via elastic-search.
         """
         results = []
-        for product in cls.search_on_elastic_search(phrase, limit=limit):
+        for product in cls._quick_search_es(phrase, limit=limit):
             results.append({"value": product.name})
 
         return results
